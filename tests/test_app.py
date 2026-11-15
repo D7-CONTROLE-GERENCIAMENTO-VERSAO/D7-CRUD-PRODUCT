@@ -357,3 +357,180 @@ def test_api_product_endpoints_require_authentication_and_validate_payload():
                 headers=headers,
             )
             assert response.status_code == 422
+
+
+def test_db_web_list_products(capsys):
+    conn_desc, cursor_desc = _make_mock_conn(fetchone_return=(2,))
+    cursor_desc.fetchall.return_value = [
+        (2, "Teclado", "Perifericos", Decimal("99.90"), 5, "Mecanico"),
+        (1, "Mouse", "Perifericos", Decimal("49.90"), 10, ""),
+    ]
+    with patch("db.get_connection", return_value=conn_desc):
+        result_desc = db.web_list_products(
+            page=2,
+            page_size=5,
+            sort_by="price",
+            order="desc",
+            request_id="req-list-desc",
+        )
+
+    assert result_desc["total"] == 2
+    assert len(result_desc["items"]) == 2
+    assert result_desc["items"][0]["price"] == Decimal("99.90")
+    assert cursor_desc.execute.call_count == 2
+    assert "SELECT COUNT(*) FROM products" in cursor_desc.execute.call_args_list[0].args[0]
+    list_sql = cursor_desc.execute.call_args_list[1].args[0]
+    assert "ORDER BY price DESC, id ASC" in list_sql
+    assert "LIMIT %s OFFSET %s" in list_sql
+    assert cursor_desc.execute.call_args_list[1].args[1] == (5, 5)
+    conn_desc.close.assert_called_once()
+
+    conn_asc, cursor_asc = _make_mock_conn(fetchone_return=(1,))
+    cursor_asc.fetchall.return_value = [
+        (1, "Mouse", "Perifericos", Decimal("49.90"), 10, ""),
+    ]
+    with patch("db.get_connection", return_value=conn_asc):
+        result_asc = db.web_list_products(
+            page=1,
+            page_size=5,
+            sort_by="name",
+            order="asc",
+            request_id="req-list-asc",
+        )
+
+    assert result_asc["total"] == 1
+    assert "ORDER BY name ASC, id ASC" in cursor_asc.execute.call_args_list[1].args[0]
+    assert cursor_asc.execute.call_args_list[1].args[1] == (5, 0)
+    conn_asc.close.assert_called_once()
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [entry["operation"] for entry in logs] == ["list", "list"]
+    assert [entry["status"] for entry in logs] == ["success", "success"]
+    assert [entry["request_id"] for entry in logs] == ["req-list-desc", "req-list-asc"]
+
+
+def test_db_web_delete_product(capsys):
+    ok_conn, ok_cursor = _make_mock_conn(fetchone_return=(7,))
+    with patch("db.get_connection", return_value=ok_conn):
+        deleted = db.web_delete_product(7, "req-del-ok")
+
+    assert deleted is True
+    assert "DELETE FROM products" in ok_cursor.execute.call_args.args[0]
+    assert ok_cursor.execute.call_args.args[1] == (7,)
+    ok_conn.commit.assert_called_once()
+    ok_conn.close.assert_called_once()
+
+    missing_conn, _ = _make_mock_conn(fetchone_return=None)
+    with patch("db.get_connection", return_value=missing_conn):
+        not_deleted = db.web_delete_product(8, "req-del-missing")
+
+    assert not_deleted is False
+    missing_conn.commit.assert_called_once()
+    missing_conn.close.assert_called_once()
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [entry["operation"] for entry in logs] == ["delete", "delete"]
+    assert [entry["status"] for entry in logs] == ["success", "error"]
+    assert logs[1]["level"] == "WARN"
+    assert [entry["request_id"] for entry in logs] == ["req-del-ok", "req-del-missing"]
+
+
+def test_api_web_list_products_and_validation(capsys):
+    sample_items = [
+        {
+            "id": 2,
+            "name": "Mouse",
+            "category": "Perifericos",
+            "price": Decimal("59.90"),
+            "stock": 10,
+            "description": "Optico",
+        }
+    ]
+    db_result = {"items": sample_items, "total": 6}
+    with patch("db.init_db"):
+        with TestClient(api.app) as client:
+            unauth = client.get("/api/web/records")
+            assert unauth.status_code == 401
+
+            token = api.create_web_token("admin")
+            headers = {"Authorization": f"Bearer {token}"}
+
+            with patch("db.web_list_products", return_value=db_result) as list_mock:
+                res_default = client.get("/api/web/records", headers=headers)
+                res_custom = client.get(
+                    "/api/web/records?page=2&page_size=5&sort_by=price&order=desc",
+                    headers=headers,
+                )
+
+            bad_page = client.get("/api/web/records?page=0", headers=headers)
+            bad_size = client.get("/api/web/records?page_size=10", headers=headers)
+            bad_sort = client.get("/api/web/records?sort_by=invalid", headers=headers)
+            bad_order = client.get("/api/web/records?order=up", headers=headers)
+
+    assert res_default.status_code == 200
+    assert res_default.json()["total"] == 6
+    assert res_default.json()["page"] == 1
+    assert res_default.json()["page_size"] == 5
+    assert res_default.json()["sort_by"] == "id"
+    assert res_default.json()["order"] == "asc"
+
+    assert res_custom.status_code == 200
+    assert res_custom.json()["page"] == 2
+    assert res_custom.json()["sort_by"] == "price"
+    assert res_custom.json()["order"] == "desc"
+
+    assert bad_page.status_code == 422
+    assert bad_size.status_code == 422
+    assert bad_sort.status_code == 422
+    assert bad_order.status_code == 422
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    list_logs = [entry for entry in logs if entry["operation"] == "list"]
+    assert len(list_logs) == 2
+    assert list_logs[0]["request_id"] == list_mock.call_args_list[0].kwargs["request_id"]
+    assert list_logs[1]["request_id"] == list_mock.call_args_list[1].kwargs["request_id"]
+
+
+def test_api_web_delete_product_and_auth(capsys):
+    with patch("db.init_db"):
+        with TestClient(api.app) as client:
+            unauth = client.delete("/api/web/records/7")
+            assert unauth.status_code == 401
+
+            token = api.create_web_token("admin")
+            headers = {"Authorization": f"Bearer {token}"}
+
+            with patch("db.web_delete_product", side_effect=[True, False]) as del_mock:
+                res_ok = client.delete("/api/web/records/7", headers=headers)
+                res_missing = client.delete("/api/web/records/8", headers=headers)
+
+    assert res_ok.status_code == 200
+    assert res_ok.json() == {"status": "ok", "deleted_id": 7}
+    assert res_missing.status_code == 404
+    assert res_missing.json()["detail"] == "Produto nao encontrado"
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    del_logs = [entry for entry in logs if entry["operation"] == "delete"]
+    assert [entry["status"] for entry in del_logs] == ["success", "error"]
+    assert del_logs[0]["request_id"] == del_mock.call_args_list[0].kwargs["request_id"]
+    assert del_logs[1]["request_id"] == del_mock.call_args_list[1].kwargs["request_id"]
+
+
+def test_index_contains_listing_pagination_sort_and_delete_controls():
+    with patch("db.init_db"):
+        with TestClient(api.app) as client:
+            res_index = client.get("/")
+
+    assert res_index.status_code == 200
+    for marker in (
+        'id="products-table"',
+        'id="products-tbody"',
+        'id="sort-by"',
+        'id="sort-order"',
+        'id="prev-page-btn"',
+        'id="next-page-btn"',
+        'id="page-info"',
+        'id="delete-product-btn"',
+        "/api/web/records",
+    ):
+        assert marker in res_index.text
