@@ -90,12 +90,45 @@
       font-weight: 600;
       margin-bottom: 0.375rem;
     }
-    input {
+    input, select, textarea {
       width: 100%;
       padding: 0.625rem 0.75rem;
       border: 1px solid var(--border);
       border-radius: 0.5rem;
       font-size: 0.95rem;
+      font: inherit;
+    }
+    textarea {
+      min-height: 6rem;
+      resize: vertical;
+    }
+    .form-actions, .edit-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+    .form-message {
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      margin: 1rem 0;
+    }
+    .form-message.error {
+      background: #fee2e2;
+      color: var(--danger);
+      border: 1px solid #fecaca;
+    }
+    .form-message.success {
+      background: #dcfce7;
+      color: var(--success);
+      border: 1px solid #bbf7d0;
+    }
+    .edit-tools {
+      margin-top: 1.5rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--border);
     }
     button {
       cursor: pointer;
@@ -169,9 +202,54 @@
     <!-- Painel Principal Autenticado -->
     <section id="app-section" class="card hidden">
       <h2>Painel de Produtos</h2>
-      <p class="subtitle">Sessão autenticada ativa. Utilize os módulos abaixo para gerenciar os registros.</p>
+      <p class="subtitle">Cadastre produtos ou edite um produto informando seu ID.</p>
       <div id="modules-container">
-        <p>Estrutura Web inicializada com sucesso.</p>
+        <h3 id="product-form-title">Cadastrar produto</h3>
+        <div id="product-message" class="form-message hidden" role="status" aria-live="polite"></div>
+        <form id="product-form">
+          <div class="form-group">
+            <label for="product-name">Nome *</label>
+            <input id="product-name" name="name" type="text" required minlength="2" maxlength="120" />
+          </div>
+          <div class="form-group">
+            <label for="product-category">Categoria *</label>
+            <select id="product-category" name="category" required>
+              <option value="">Selecione uma categoria</option>
+              <option value="Eletronicos">Eletronicos</option>
+              <option value="Perifericos">Perifericos</option>
+              <option value="Moveis">Moveis</option>
+              <option value="Vestuario">Vestuario</option>
+              <option value="Outros">Outros</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="product-price">Preço unitário *</label>
+            <input id="product-price" name="price" type="number" required min="0.01" max="99999999.99" step="0.01" />
+          </div>
+          <div class="form-group">
+            <label for="product-stock">Estoque *</label>
+            <input id="product-stock" name="stock" type="number" required min="0" max="2147483647" step="1" />
+          </div>
+          <div class="form-group">
+            <label for="product-description">Descrição (opcional)</label>
+            <textarea id="product-description" name="description"></textarea>
+          </div>
+          <div class="form-actions">
+            <button id="product-submit" type="submit">Cadastrar produto</button>
+            <button id="cancel-edit" class="secondary hidden" type="button">Cancelar edição</button>
+          </div>
+        </form>
+
+        <div class="edit-tools">
+          <form id="edit-product-form" class="edit-actions">
+            <div class="form-group">
+              <label for="edit-product-id">ID do produto para edição</label>
+              <input id="edit-product-id" name="product_id" type="number" min="1" step="1" required />
+            </div>
+            <button type="submit" class="secondary">Usar ID para editar</button>
+          </form>
+          <p class="subtitle">Ao editar, informe os dados atualizados nos campos acima.</p>
+        </div>
       </div>
     </section>
   </main>
@@ -187,6 +265,70 @@
     const loginError = document.getElementById("login-error");
     const userInfo = document.getElementById("user-info");
     const logoutBtn = document.getElementById("logout-btn");
+    const productForm = document.getElementById("product-form");
+    const productMessage = document.getElementById("product-message");
+    const productFormTitle = document.getElementById("product-form-title");
+    const productSubmit = document.getElementById("product-submit");
+    const cancelEditButton = document.getElementById("cancel-edit");
+    const editProductForm = document.getElementById("edit-product-form");
+    const editProductId = document.getElementById("edit-product-id");
+    let editingProductId = null;
+
+    function showProductMessage(message, type) {
+      productMessage.textContent = message;
+      productMessage.className = `form-message ${type}`;
+    }
+
+    function setEditMode(productId) {
+      editingProductId = productId;
+      productFormTitle.textContent = `Editar produto #${productId}`;
+      productSubmit.textContent = "Salvar alterações";
+      cancelEditButton.classList.remove("hidden");
+      productMessage.className = "form-message hidden";
+    }
+
+    function clearEditMode() {
+      editingProductId = null;
+      productFormTitle.textContent = "Cadastrar produto";
+      productSubmit.textContent = "Cadastrar produto";
+      cancelEditButton.classList.add("hidden");
+      productForm.reset();
+      productMessage.className = "form-message hidden";
+    }
+
+    function describeValidationError(error) {
+      const field = error.loc && error.loc.length
+        ? error.loc[error.loc.length - 1]
+        : "";
+      const fieldNames = {
+        name: "Nome",
+        category: "Categoria",
+        price: "Preço",
+        stock: "Estoque",
+        description: "Descrição",
+      };
+      const label = fieldNames[field] || "Campo";
+      if (error.type === "string_too_short") return `${label}: informe pelo menos 2 caracteres.`;
+      if (error.type === "greater_than") return `${label}: informe um valor maior que zero.`;
+      if (error.type === "greater_than_equal") return `${label}: informe um valor igual ou maior que zero.`;
+      if (error.type === "less_than_equal") return `${label}: valor acima do limite permitido.`;
+      if (error.type === "decimal_max_digits" || error.type === "decimal_max_places") {
+        return "Preço: use no máximo 8 dígitos inteiros e 2 casas decimais.";
+      }
+      if (error.type === "literal_error") return "Selecione uma categoria válida.";
+      if (error.type === "missing") return `${label}: preenchimento obrigatório.`;
+      return `${label}: valor inválido.`;
+    }
+
+    async function getApiError(response) {
+      const body = await response.json().catch(() => ({}));
+      if (response.status === 401) return "Sua sessão expirou. Saia e autentique-se novamente.";
+      if (response.status === 422 && Array.isArray(body.detail)) {
+        return body.detail.map(describeValidationError).join(" ");
+      }
+      if (typeof body.detail === "string") return body.detail;
+      return `Não foi possível salvar o produto (HTTP ${response.status}).`;
+    }
 
     async function checkHealth() {
       try {
@@ -256,8 +398,77 @@
     logoutBtn.addEventListener("click", () => {
       sessionStorage.removeItem(TOKEN_KEY);
       sessionStorage.removeItem(USER_KEY);
+      clearEditMode();
       updateAuthUI();
     });
+
+    productForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const nameInput = document.getElementById("product-name");
+      nameInput.setCustomValidity(
+        nameInput.value.trim().length < 2 ? "Informe pelo menos 2 caracteres." : ""
+      );
+      if (!productForm.reportValidity()) return;
+
+      const product = {
+        name: nameInput.value.trim(),
+        category: document.getElementById("product-category").value,
+        price: document.getElementById("product-price").value,
+        stock: document.getElementById("product-stock").value,
+        description: document.getElementById("product-description").value,
+      };
+      const method = editingProductId === null ? "POST" : "PUT";
+      const url = editingProductId === null
+        ? "/api/web/records"
+        : `/api/web/records/${editingProductId}`;
+      productMessage.className = "form-message hidden";
+
+      try {
+        const response = await fetch(url, {
+          method,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}`,
+          },
+          body: JSON.stringify(product),
+        });
+        if (!response.ok) {
+          showProductMessage(await getApiError(response), "error");
+          return;
+        }
+
+        const savedProduct = await response.json();
+        if (method === "POST") {
+          editProductId.value = savedProduct.id;
+          showProductMessage(`Produto cadastrado com sucesso. ID: ${savedProduct.id}.`, "success");
+        } else {
+          showProductMessage(`Produto #${savedProduct.id} atualizado com sucesso.`, "success");
+        }
+        clearEditModeAfterSave();
+      } catch (_err) {
+        showProductMessage("Erro de conexão ao salvar o produto.", "error");
+      }
+    });
+
+    function clearEditModeAfterSave() {
+      editingProductId = null;
+      productFormTitle.textContent = "Cadastrar produto";
+      productSubmit.textContent = "Cadastrar produto";
+      cancelEditButton.classList.add("hidden");
+    }
+
+    editProductForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const productId = Number(editProductId.value);
+      if (!Number.isInteger(productId) || productId < 1) {
+        showProductMessage("Informe um ID de produto válido.", "error");
+        return;
+      }
+      setEditMode(productId);
+      document.getElementById("product-name").focus();
+    });
+
+    cancelEditButton.addEventListener("click", clearEditMode);
 
     checkHealth();
     updateAuthUI();
