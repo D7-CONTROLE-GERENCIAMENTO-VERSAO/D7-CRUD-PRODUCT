@@ -1349,3 +1349,244 @@ def test_cli_create_and_update_commands_and_validation(capsys, monkeypatch):
     assert update_req.get_method() == "PUT"
     assert update_req.full_url.endswith("/api/cli/records/10")
     capsys.readouterr()
+
+
+def test_db_cli_list_and_delete_products(capsys):
+    listed_row = (17, "Teclado", "Perifericos", Decimal("125.90"), 8, "Mecanico")
+    conn_list, cur_list = _make_mock_conn(fetchone_return=(6,))
+    cur_list.fetchall.return_value = [listed_row]
+
+    with patch("db.get_connection", return_value=conn_list):
+        result = db.cli_list_products(
+            page=2,
+            page_size=5,
+            sort_by="price",
+            order="desc",
+            request_id="req-cli-list",
+        )
+
+    assert result == {
+        "items": [
+            {
+                "id": 17,
+                "name": "Teclado",
+                "category": "Perifericos",
+                "price": Decimal("125.90"),
+                "stock": 8,
+                "description": "Mecanico",
+            }
+        ],
+        "total": 6,
+    }
+    count_sql = cur_list.execute.call_args_list[0].args[0]
+    list_sql, list_params = cur_list.execute.call_args_list[1].args
+    assert "SELECT COUNT(*) FROM products" in count_sql
+    assert "ORDER BY price DESC, id ASC" in list_sql
+    assert list_params == (5, 5)
+    conn_list.close.assert_called_once()
+
+    conn_deleted, cur_deleted = _make_mock_conn(fetchone_return=(17,))
+    with patch("db.get_connection", return_value=conn_deleted):
+        assert db.cli_delete_product(17, "req-cli-delete") is True
+    assert "DELETE FROM products" in cur_deleted.execute.call_args.args[0]
+    assert cur_deleted.execute.call_args.args[1] == (17,)
+    conn_deleted.commit.assert_called_once()
+    conn_deleted.close.assert_called_once()
+
+    conn_missing, _ = _make_mock_conn(fetchone_return=None)
+    with patch("db.get_connection", return_value=conn_missing):
+        assert db.cli_delete_product(999, "req-cli-delete-missing") is False
+    conn_missing.commit.assert_called_once()
+    conn_missing.close.assert_called_once()
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [entry["client"] for entry in logs] == ["cli", "cli", "cli"]
+    assert [entry["operation"] for entry in logs] == ["list", "delete", "delete"]
+    assert [entry["status"] for entry in logs] == ["success", "success", "error"]
+    assert [entry["request_id"] for entry in logs] == [
+        "req-cli-list",
+        "req-cli-delete",
+        "req-cli-delete-missing",
+    ]
+
+
+def test_api_cli_list_and_delete_records(capsys):
+    cli_token = api.create_cli_token("admin")
+    headers = {"Authorization": f"Bearer {cli_token}"}
+    listed_items = [
+        {
+            "id": 17,
+            "name": "Teclado",
+            "category": "Perifericos",
+            "price": Decimal("125.90"),
+            "stock": 8,
+            "description": "Mecanico",
+        }
+    ]
+
+    def list_products(**kwargs):
+        db.log_db(
+            "cli", "list", "success", kwargs["request_id"], "Produtos listados"
+        )
+        return {"items": listed_items, "total": 6}
+
+    def delete_product(product_id, request_id):
+        deleted = product_id == 17
+        db.log_db(
+            "cli",
+            "delete",
+            "success" if deleted else "error",
+            request_id,
+            "Produto removido" if deleted else "Produto nao encontrado",
+            level="INFO" if deleted else "WARN",
+        )
+        return deleted
+
+    with patch("db.init_db"):
+        with TestClient(api.app) as client:
+            unauth_list = client.get("/api/cli/records")
+            unauth_delete = client.delete("/api/cli/records/17")
+            with patch("db.cli_list_products", side_effect=list_products) as list_mock:
+                response_list = client.get(
+                    "/api/cli/records?page=2&page_size=5&sort_by=price&order=desc",
+                    headers=headers,
+                )
+            with patch(
+                "db.cli_delete_product",
+                side_effect=delete_product,
+            ) as delete_mock:
+                response_deleted = client.delete(
+                    "/api/cli/records/17", headers=headers
+                )
+                response_missing = client.delete(
+                    "/api/cli/records/999", headers=headers
+                )
+            invalid_page = client.get(
+                "/api/cli/records?page=0", headers=headers
+            )
+            invalid_sort = client.get(
+                "/api/cli/records?sort_by=invalid", headers=headers
+            )
+            invalid_order = client.get(
+                "/api/cli/records?order=up", headers=headers
+            )
+
+    assert unauth_list.status_code == 401
+    assert unauth_delete.status_code == 401
+    assert response_list.status_code == 200
+    assert response_list.json() == {
+        "status": "ok",
+        "items": [
+            {
+                "id": 17,
+                "name": "Teclado",
+                "category": "Perifericos",
+                "price": 125.9,
+                "stock": 8,
+                "description": "Mecanico",
+            }
+        ],
+        "total": 6,
+        "page": 2,
+        "page_size": 5,
+        "sort_by": "price",
+        "order": "desc",
+    }
+    list_kwargs = list_mock.call_args.kwargs
+    assert list_kwargs["page"] == 2
+    assert list_kwargs["page_size"] == 5
+    assert list_kwargs["sort_by"] == "price"
+    assert list_kwargs["order"] == "desc"
+    assert response_deleted.status_code == 200
+    assert response_deleted.json() == {"status": "ok", "deleted_id": 17}
+    assert response_missing.status_code == 404
+    assert response_missing.json()["detail"] == "Produto nao encontrado"
+    assert invalid_page.status_code == 422
+    assert invalid_sort.status_code == 422
+    assert invalid_order.status_code == 422
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    for operation, call in (
+        ("list", list_mock.call_args),
+        ("delete", delete_mock.call_args_list[0]),
+    ):
+        request_id = call.kwargs["request_id"]
+        operation_logs = [
+            entry
+            for entry in logs
+            if entry["client"] == "cli"
+            and entry["operation"] == operation
+            and entry["request_id"] == request_id
+        ]
+        assert {entry["layer"] for entry in operation_logs} == {"api", "db"}
+    assert [
+        entry["status"]
+        for entry in logs
+        if entry["operation"] == "delete" and entry["layer"] == "api"
+    ] == ["success", "error"]
+
+
+def test_cli_list_and_delete_commands(capsys, monkeypatch):
+    monkeypatch.delenv("CLI_TOKEN", raising=False)
+    assert cli.main(["list"]) == 1
+    assert "CLI_TOKEN" in capsys.readouterr().err
+    assert cli.main(["delete", "--id", "17"]) == 1
+    assert "CLI_TOKEN" in capsys.readouterr().err
+
+    def _mock_resp(status: int, payload: dict):
+        resp = MagicMock()
+        resp.status = status
+        resp.read.return_value = json.dumps(payload).encode("utf-8")
+        cm = MagicMock()
+        cm.__enter__.return_value = resp
+        return cm
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_mock_resp(200, {"items": [], "total": 0}),
+    ) as mock_list:
+        rc_list = cli.main(
+            [
+                "--token",
+                "tok-cli",
+                "list",
+                "--page",
+                "2",
+                "--sort-by",
+                "price",
+                "--order",
+                "desc",
+            ]
+        )
+    assert rc_list == 0
+    list_req = mock_list.call_args.args[0]
+    assert list_req.get_method() == "GET"
+    assert list_req.full_url.endswith(
+        "/api/cli/records?page=2&sort_by=price&order=desc"
+    )
+    assert list_req.headers["Authorization"] == "Bearer tok-cli"
+    capsys.readouterr()
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_mock_resp(200, {"status": "ok", "deleted_id": 17}),
+    ) as mock_delete:
+        rc_delete = cli.main(["--token", "tok-cli", "delete", "--id", "17"])
+    assert rc_delete == 0
+    delete_req = mock_delete.call_args.args[0]
+    assert delete_req.get_method() == "DELETE"
+    assert delete_req.full_url.endswith("/api/cli/records/17")
+    assert delete_req.headers["Authorization"] == "Bearer tok-cli"
+    capsys.readouterr()
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_mock_resp(
+            404, {"detail": "Produto nao encontrado"}
+        ),
+    ):
+        rc_missing = cli.main(["--token", "tok-cli", "delete", "--id", "999"])
+    assert rc_missing == 1
+    assert json.loads(capsys.readouterr().out.strip()) == {
+        "detail": "Produto nao encontrado"
+    }

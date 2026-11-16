@@ -598,3 +598,81 @@ def cli_update_product(
         message="Produto atualizado via CLI",
     )
     return product
+
+
+def cli_list_products(
+    page: int,
+    page_size: int,
+    sort_by: str,
+    order: str,
+    request_id: str,
+) -> dict:
+    sort_column = SORT_COLUMNS[sort_by]
+    sort_direction = "ASC" if order.lower() == "asc" else "DESC"
+    offset = (page - 1) * page_size
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM products;")
+            total = cur.fetchone()[0]
+            cur.execute(
+                f"""
+                SELECT id, name, category, price, stock, description
+                FROM products
+                ORDER BY {sort_column} {sort_direction}, id ASC
+                LIMIT %s OFFSET %s;
+                """,
+                (page_size, offset),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    items = [_product_from_row(row) for row in rows]
+    log_db(
+        client="cli",
+        operation="list",
+        status="success",
+        request_id=request_id,
+        message="Produtos listados do banco via CLI",
+    )
+    return {"items": items, "total": total}
+
+
+def cli_delete_product(product_id: int, request_id: str) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM products
+                WHERE id = %s
+                RETURNING id;
+                """,
+                (product_id,),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        conn.close()
+
+    if row is None:
+        log_db(
+            client="cli",
+            operation="delete",
+            status="error",
+            request_id=request_id,
+            message="Produto nao encontrado na CLI",
+            level="WARN",
+        )
+        return False
+
+    log_db(
+        client="cli",
+        operation="delete",
+        status="success",
+        request_id=request_id,
+        message="Produto removido via CLI",
+    )
+    return True

@@ -291,3 +291,42 @@ docker compose logs -f api
 ```bash
 docker compose run --rm api pytest --cov=api --cov=db --cov=cli --cov-report=term-missing --cov-fail-under=100
 ```
+
+---
+
+## Issue #9 — Listagem e Exclusão de Produtos na CLI
+
+A CLI disponibiliza `list` para consultar produtos em páginas de 5 itens e `delete` para remover um produto pelo ID. Ambos consomem somente endpoints CLI protegidos por Bearer token; os dados são persistidos no mesmo PostgreSQL usado pela Web, portanto as exclusões ficam imediatamente refletidas na interface.
+
+### 1. Listar e ordenar produtos
+
+```bash
+docker compose run --rm -e CLI_TOKEN="<TOKEN>" api python cli.py list \
+  --page 1 \
+  --sort-by name \
+  --order asc
+```
+
+`--page` é um inteiro a partir de 1. `--sort-by` aceita `id`, `name`, `category`, `price` ou `stock`, e `--order` aceita `asc` ou `desc`. Os padrões são página `1`, ordenação por `id` e direção `asc`. A resposta JSON inclui os itens da página, o total de produtos e os parâmetros da consulta. O endpoint `GET /api/cli/records` também limita a página a 5 itens.
+
+### 2. Excluir um produto
+
+```bash
+docker compose run --rm -e CLI_TOKEN="<TOKEN>" api python cli.py delete --id 1
+```
+
+O comando consome `DELETE /api/cli/records/{id}` e retorna o ID removido; um ID inexistente produz HTTP 404 e encerra o comando com código diferente de zero.
+
+### 3. Autenticação, logs e testes
+
+Informe o token por `--token <TOKEN>` antes do subcomando ou pela variável `CLI_TOKEN`. A ausência ou invalidade do token resulta em HTTP 401. A API e o banco emitem logs JSON com `client: "cli"` e o mesmo `request_id`; consulte-os com:
+
+```bash
+docker compose logs -f api
+```
+
+Valide as operações e 100% de cobertura de linhas em `api.py`, `db.py` e `cli.py`:
+
+```bash
+docker compose run --rm api pytest --cov=api --cov=db --cov=cli --cov-report=term-missing --cov-fail-under=100
+```

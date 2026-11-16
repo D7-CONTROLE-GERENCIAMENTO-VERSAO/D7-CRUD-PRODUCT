@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -150,6 +151,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_product_arguments(update_parser)
 
+    list_parser = subparsers.add_parser(
+        "list",
+        help="Lista produtos paginados via API CLI (GET /api/cli/records)",
+    )
+    list_parser.add_argument("--page", type=int, default=1, help="Numero da pagina")
+    list_parser.add_argument(
+        "--sort-by",
+        choices=("id", "name", "category", "price", "stock"),
+        default="id",
+        help="Campo de ordenacao",
+    )
+    list_parser.add_argument(
+        "--order",
+        choices=("asc", "desc"),
+        default="asc",
+        help="Direcao da ordenacao",
+    )
+
+    delete_parser = subparsers.add_parser(
+        "delete",
+        help="Exclui um produto via API CLI (DELETE /api/cli/records/{id})",
+    )
+    delete_parser.add_argument(
+        "--id", dest="product_id", required=True, type=int, help="ID do produto"
+    )
+
     return parser
 
 
@@ -188,35 +215,64 @@ def main(argv: list[str] | None = None) -> int:
         token = _require_token(args.token)
         if token is None:
             return 1
-        product_id = getattr(args, "product_id", None)
-        try:
-            payload = validate_product_payload(
-                name=args.name,
-                category=args.category,
-                price=args.price,
-                stock=args.stock,
-                description=args.description,
-                product_id=product_id,
-            )
-        except ValueError as exc:
-            print(
-                json.dumps({"status": "error", "detail": str(exc)}, ensure_ascii=False),
-                file=sys.stderr,
-            )
-            return 1
 
-        if args.command == "create":
-            status, body = request_api(
-                args.base_url, "POST", "/api/cli/records", payload=payload, token=token
+        if args.command == "list":
+            query = urllib.parse.urlencode(
+                {
+                    "page": args.page,
+                    "sort_by": args.sort_by,
+                    "order": args.order,
+                }
             )
-        else:
             status, body = request_api(
                 args.base_url,
-                "PUT",
-                f"/api/cli/records/{product_id}",
-                payload=payload,
+                "GET",
+                f"/api/cli/records?{query}",
                 token=token,
             )
+        elif args.command == "delete":
+            status, body = request_api(
+                args.base_url,
+                "DELETE",
+                f"/api/cli/records/{args.product_id}",
+                token=token,
+            )
+        else:
+            product_id = getattr(args, "product_id", None)
+            try:
+                payload = validate_product_payload(
+                    name=args.name,
+                    category=args.category,
+                    price=args.price,
+                    stock=args.stock,
+                    description=args.description,
+                    product_id=product_id,
+                )
+            except ValueError as exc:
+                print(
+                    json.dumps(
+                        {"status": "error", "detail": str(exc)}, ensure_ascii=False
+                    ),
+                    file=sys.stderr,
+                )
+                return 1
+
+            if args.command == "create":
+                status, body = request_api(
+                    args.base_url,
+                    "POST",
+                    "/api/cli/records",
+                    payload=payload,
+                    token=token,
+                )
+            else:
+                status, body = request_api(
+                    args.base_url,
+                    "PUT",
+                    f"/api/cli/records/{product_id}",
+                    payload=payload,
+                    token=token,
+                )
 
     print(json.dumps(body, ensure_ascii=False))
     return 0 if 200 <= status < 300 else 1
