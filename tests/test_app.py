@@ -1089,3 +1089,263 @@ def test_cli_module_commands_and_entrypoint(capsys, monkeypatch):
             runpy.run_path(cli.__file__, run_name="__main__")
     assert main_exit.value.code == 0
     capsys.readouterr()
+
+
+def test_db_cli_create_and_update_product(capsys):
+    created_row = (21, "Monitor", "Eletronicos", Decimal("899.90"), 4, "IPS 24")
+    conn_create, cur_create = _make_mock_conn(fetchone_return=created_row)
+    with patch("db.get_connection", return_value=conn_create):
+        created = db.cli_create_product(
+            "Monitor",
+            "Eletronicos",
+            Decimal("899.90"),
+            4,
+            "IPS 24",
+            "req-cli-create",
+        )
+
+    assert created == {
+        "id": 21,
+        "name": "Monitor",
+        "category": "Eletronicos",
+        "price": Decimal("899.90"),
+        "stock": 4,
+        "description": "IPS 24",
+    }
+    assert "INSERT INTO products" in cur_create.execute.call_args.args[0]
+    conn_create.commit.assert_called_once()
+    conn_create.close.assert_called_once()
+
+    updated_row = (21, "Monitor 4K", "Eletronicos", Decimal("1299.90"), 3, "UHD")
+    conn_update, cur_update = _make_mock_conn(fetchone_return=updated_row)
+    with patch("db.get_connection", return_value=conn_update):
+        updated = db.cli_update_product(
+            21,
+            "Monitor 4K",
+            "Eletronicos",
+            Decimal("1299.90"),
+            3,
+            "UHD",
+            "req-cli-update",
+        )
+
+    assert updated["name"] == "Monitor 4K"
+    assert "UPDATE products" in cur_update.execute.call_args.args[0]
+    conn_update.commit.assert_called_once()
+    conn_update.close.assert_called_once()
+
+    conn_missing, _ = _make_mock_conn(fetchone_return=None)
+    with patch("db.get_connection", return_value=conn_missing):
+        missing = db.cli_update_product(
+            999,
+            "Monitor",
+            "Eletronicos",
+            Decimal("899.90"),
+            4,
+            "",
+            "req-cli-missing",
+        )
+    assert missing is None
+    conn_missing.commit.assert_called_once()
+    conn_missing.close.assert_called_once()
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [entry["client"] for entry in logs] == ["cli", "cli", "cli"]
+    assert [entry["operation"] for entry in logs] == ["insert", "update", "update"]
+    assert [entry["status"] for entry in logs] == ["success", "success", "error"]
+    assert [entry["request_id"] for entry in logs] == [
+        "req-cli-create",
+        "req-cli-update",
+        "req-cli-missing",
+    ]
+
+
+def test_api_cli_create_and_update_records(capsys):
+    cli_token = api.create_cli_token("admin")
+    headers = {"Authorization": f"Bearer {cli_token}"}
+    payload = {
+        "name": "Headset",
+        "category": "Perifericos",
+        "price": "199.90",
+        "stock": 6,
+        "description": "7.1 Surround",
+    }
+    created_product = {
+        "id": 31,
+        "name": "Headset",
+        "category": "Perifericos",
+        "price": Decimal("199.90"),
+        "stock": 6,
+        "description": "7.1 Surround",
+    }
+    updated_product = {**created_product, "name": "Headset Pro"}
+
+    with patch("db.init_db"):
+        with TestClient(api.app) as client:
+            unauth_post = client.post("/api/cli/records", json=payload)
+            unauth_put = client.put("/api/cli/records/31", json=payload)
+            assert unauth_post.status_code == 401
+            assert unauth_put.status_code == 401
+
+            with patch(
+                "db.cli_create_product", return_value=created_product
+            ) as create_mock:
+                res_create = client.post(
+                    "/api/cli/records", json=payload, headers=headers
+                )
+
+            with patch(
+                "db.cli_update_product", side_effect=[updated_product, None]
+            ) as update_mock:
+                res_update = client.put(
+                    "/api/cli/records/31",
+                    json={**payload, "name": "Headset Pro"},
+                    headers=headers,
+                )
+                res_missing = client.put(
+                    "/api/cli/records/999", json=payload, headers=headers
+                )
+
+    assert res_create.status_code == 201
+    assert res_create.json()["id"] == 31
+    assert res_update.status_code == 200
+    assert res_update.json()["name"] == "Headset Pro"
+    assert res_missing.status_code == 404
+    assert res_missing.json()["detail"] == "Produto nao encontrado"
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    create_logs = [
+        entry
+        for entry in logs
+        if entry["client"] == "cli" and entry["operation"] == "create"
+    ]
+    update_logs = [
+        entry
+        for entry in logs
+        if entry["client"] == "cli" and entry["operation"] == "update"
+    ]
+    assert len(create_logs) == 1
+    assert create_logs[0]["request_id"] == create_mock.call_args.kwargs["request_id"]
+    assert [entry["status"] for entry in update_logs] == ["success", "error"]
+    assert update_logs[0]["request_id"] == update_mock.call_args_list[0].kwargs["request_id"]
+    assert update_logs[1]["request_id"] == update_mock.call_args_list[1].kwargs["request_id"]
+
+
+def test_cli_create_and_update_commands_and_validation(capsys, monkeypatch):
+    monkeypatch.delenv("CLI_TOKEN", raising=False)
+
+    for bad_kwargs in (
+        {"name": "Teclado", "category": "Perifericos", "price": "10.00", "stock": 1, "product_id": 0},
+        {"name": " ", "category": "Perifericos", "price": "10.00", "stock": 1},
+        {"name": "Teclado", "category": "Invalida", "price": "10.00", "stock": 1},
+        {"name": "Teclado", "category": "Perifericos", "price": "abc", "stock": 1},
+        {"name": "Teclado", "category": "Perifericos", "price": "0", "stock": 1},
+        {"name": "Teclado", "category": "Perifericos", "price": "10.999", "stock": 1},
+        {"name": "Teclado", "category": "Perifericos", "price": "10.00", "stock": -1},
+    ):
+        with pytest.raises(ValueError):
+            cli.validate_product_payload(**bad_kwargs)
+
+    rc_no_tok = cli.main(
+        [
+            "create",
+            "--name",
+            "Teclado",
+            "--category",
+            "Perifericos",
+            "--price",
+            "99.90",
+            "--stock",
+            "3",
+        ]
+    )
+    assert rc_no_tok == 1
+    assert "CLI_TOKEN" in capsys.readouterr().err
+
+    rc_invalid = cli.main(
+        [
+            "--token",
+            "tok-cli",
+            "create",
+            "--name",
+            "X",
+            "--category",
+            "Perifericos",
+            "--price",
+            "99.90",
+            "--stock",
+            "3",
+        ]
+    )
+    assert rc_invalid == 1
+    assert "entre 2 e 120 caracteres" in capsys.readouterr().err
+
+    def _mock_resp(status: int, payload: dict):
+        resp = MagicMock()
+        resp.status = status
+        resp.read.return_value = json.dumps(payload).encode("utf-8")
+        cm = MagicMock()
+        cm.__enter__.return_value = resp
+        return cm
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_mock_resp(201, {"id": 10, "name": "Teclado"}),
+    ) as mock_create:
+        rc_create = cli.main(
+            [
+                "--token",
+                "tok-cli",
+                "create",
+                "--name",
+                "  Teclado  ",
+                "--category",
+                "Perifericos",
+                "--price",
+                "99.9",
+                "--stock",
+                "3",
+                "--description",
+                "ABNT2",
+            ]
+        )
+    assert rc_create == 0
+    create_req = mock_create.call_args.args[0]
+    assert create_req.get_method() == "POST"
+    assert create_req.full_url.endswith("/api/cli/records")
+    assert create_req.headers["Authorization"] == "Bearer tok-cli"
+    assert json.loads(create_req.data.decode("utf-8")) == {
+        "name": "Teclado",
+        "category": "Perifericos",
+        "price": "99.90",
+        "stock": 3,
+        "description": "ABNT2",
+    }
+    capsys.readouterr()
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_mock_resp(200, {"id": 10, "name": "Teclado Pro"}),
+    ) as mock_update:
+        rc_update = cli.main(
+            [
+                "--token",
+                "tok-cli",
+                "update",
+                "--id",
+                "10",
+                "--name",
+                "Teclado Pro",
+                "--category",
+                "Perifericos",
+                "--price",
+                "129.90",
+                "--stock",
+                "5",
+            ]
+        )
+    assert rc_update == 0
+    update_req = mock_update.call_args.args[0]
+    assert update_req.get_method() == "PUT"
+    assert update_req.full_url.endswith("/api/cli/records/10")
+    capsys.readouterr()

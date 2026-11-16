@@ -514,3 +514,87 @@ def cli_authenticate_user(username: str, password: str, request_id: str) -> bool
         level="WARN",
     )
     return False
+
+
+def cli_create_product(
+    name: str,
+    category: str,
+    price: Decimal,
+    stock: int,
+    description: str,
+    request_id: str,
+) -> dict:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO products (name, category, price, stock, description)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, name, category, price, stock, description;
+                """,
+                (name, category, price, stock, description),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        conn.close()
+
+    product = _product_from_row(row)
+    log_db(
+        client="cli",
+        operation="insert",
+        status="success",
+        request_id=request_id,
+        message="Produto persistido via CLI",
+    )
+    return product
+
+
+def cli_update_product(
+    product_id: int,
+    name: str,
+    category: str,
+    price: Decimal,
+    stock: int,
+    description: str,
+    request_id: str,
+) -> dict | None:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE products
+                SET name = %s, category = %s, price = %s, stock = %s,
+                    description = %s
+                WHERE id = %s
+                RETURNING id, name, category, price, stock, description;
+                """,
+                (name, category, price, stock, description, product_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        conn.close()
+
+    if row is None:
+        log_db(
+            client="cli",
+            operation="update",
+            status="error",
+            request_id=request_id,
+            message="Produto nao encontrado na CLI",
+            level="WARN",
+        )
+        return None
+
+    product = _product_from_row(row)
+    log_db(
+        client="cli",
+        operation="update",
+        status="success",
+        request_id=request_id,
+        message="Produto atualizado via CLI",
+    )
+    return product

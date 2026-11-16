@@ -238,3 +238,56 @@ A partir da Issue #7, o comando de testes unitários verifica 100% de cobertura 
 ```bash
 docker compose run --rm api pytest --cov=api --cov=db --cov=cli --cov-report=term-missing --cov-fail-under=100
 ```
+
+---
+
+## Issue #8 — Cadastro e Edição de Produtos na CLI
+
+A CLI (`cli.py`) disponibiliza os subcomandos `create` e `update`, que validam localmente os 5 campos do produto (mesmas regras da interface Web) e consomem exclusivamente os endpoints HTTP protegidos da CLI (`POST /api/cli/records` e `PUT /api/cli/records/{id}`), persistindo no mesmo banco PostgreSQL via `db.cli_create_product` e `db.cli_update_product` (os registros ficam imediatamente visíveis na interface Web).
+
+### 1. Subcomandos `create` e `update` via Docker Compose
+
+Primeiro, emita um token CLI (ou defina `CLI_TOKEN`):
+
+```bash
+docker compose run --rm api python cli.py token --username admin --password admin123
+```
+
+Para **cadastrar** um novo produto (`POST /api/cli/records`, retorna HTTP 201):
+
+```bash
+docker compose run --rm -e CLI_TOKEN="<TOKEN>" api python cli.py create \
+  --name "Teclado Mecanico" \
+  --category "Perifericos" \
+  --price "249.90" \
+  --stock 15 \
+  --description "Switch Blue ABNT2"
+```
+
+Para **atualizar** um produto existente pelo ID (`PUT /api/cli/records/{id}`, retorna HTTP 200 ou HTTP 404 se o ID não existir):
+
+```bash
+docker compose run --rm -e CLI_TOKEN="<TOKEN>" api python cli.py update \
+  --id 1 \
+  --name "Teclado Mecanico Pro" \
+  --category "Perifericos" \
+  --price "279.90" \
+  --stock 12 \
+  --description "Switch Red Wireless"
+```
+
+### 2. Validações, Autenticação e Logs Correlacionados
+
+- **Campos e regras:** `name` (obrigatório, 2 a 120 caracteres após `.strip()`), `category` (`Eletronicos`, `Perifericos`, `Moveis`, `Vestuario`, `Outros`), `price` (decimal `> 0` com até 2 casas decimais), `stock` (inteiro `>= 0`) e `description` (opcional, padrão `""`).
+- **Autenticação:** requisições sem Bearer token CLI válido retornam **HTTP 401**.
+- **Logs JSON correlacionados:** todas as operações registram eventos com `client: "cli"`, `layer: "api"` e `layer: "db"` compartilhando o mesmo `request_id`. Consulte com:
+
+```bash
+docker compose logs -f api
+```
+
+### 3. Testes Unitários e 100% de Cobertura (`api.py`, `db.py` e `cli.py`)
+
+```bash
+docker compose run --rm api pytest --cov=api --cov=db --cov=cli --cov-report=term-missing --cov-fail-under=100
+```

@@ -491,3 +491,66 @@ def cli_issue_token(payload: LoginPayload):
         "token_type": "Bearer",
         "username": payload.username,
     }
+
+
+@app.post("/api/cli/records", status_code=201)
+def cli_create_record(
+    payload: ProductPayload,
+    authorization: str | None = Header(default=None),
+):
+    req_id = new_request_id()
+    verify_cli_token(authorization, request_id=req_id)
+    product = db.cli_create_product(
+        name=payload.name,
+        category=payload.category,
+        price=payload.price,
+        stock=payload.stock,
+        description=payload.description,
+        request_id=req_id,
+    )
+    log_api(
+        client="cli",
+        operation="create",
+        status="success",
+        request_id=req_id,
+        message="Produto criado via CLI",
+    )
+    return product
+
+
+@app.put("/api/cli/records/{product_id}")
+def cli_update_record(
+    product_id: int,
+    payload: ProductPayload,
+    authorization: str | None = Header(default=None),
+):
+    req_id = new_request_id()
+    verify_cli_token(authorization, request_id=req_id)
+    product = db.cli_update_product(
+        product_id=product_id,
+        name=payload.name,
+        category=payload.category,
+        price=payload.price,
+        stock=payload.stock,
+        description=payload.description,
+        request_id=req_id,
+    )
+    if product is None:
+        log_api(
+            client="cli",
+            operation="update",
+            status="error",
+            request_id=req_id,
+            message="Produto nao encontrado na CLI",
+            level="WARN",
+        )
+        raise HTTPException(status_code=404, detail="Produto nao encontrado")
+
+    log_api(
+        client="cli",
+        operation="update",
+        status="success",
+        request_id=req_id,
+        message="Produto atualizado via CLI",
+    )
+    return product

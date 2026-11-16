@@ -1,4 +1,5 @@
 import argparse
+from decimal import Decimal, InvalidOperation
 import json
 import os
 import sys
@@ -7,12 +8,56 @@ import urllib.request
 
 
 DEFAULT_API_URL = os.getenv("API_BASE_URL", "http://api:8000")
+VALID_CATEGORIES = ("Eletronicos", "Perifericos", "Moveis", "Vestuario", "Outros")
 
 
 def resolve_token(cli_token: str | None = None) -> str:
     if cli_token is not None and cli_token.strip():
         return cli_token.strip()
     return os.getenv("CLI_TOKEN", "").strip()
+
+
+def validate_product_payload(
+    name: str,
+    category: str,
+    price: str,
+    stock: int,
+    description: str = "",
+    product_id: int | None = None,
+) -> dict:
+    if product_id is not None and product_id < 1:
+        raise ValueError("O ID do produto deve ser um inteiro positivo")
+
+    normalized_name = name.strip()
+    if len(normalized_name) < 2 or len(normalized_name) > 120:
+        raise ValueError("O nome deve ter entre 2 e 120 caracteres")
+
+    if category not in VALID_CATEGORIES:
+        raise ValueError(f"Categoria invalida: {category}")
+
+    try:
+        dec_price = Decimal(str(price))
+    except InvalidOperation as exc:
+        raise ValueError("Preco invalido") from exc
+
+    if (
+        not dec_price.is_finite()
+        or dec_price <= 0
+        or dec_price > Decimal("99999999.99")
+        or dec_price.as_tuple().exponent < -2
+    ):
+        raise ValueError("O preco deve ser maior que zero com ate 2 casas decimais")
+
+    if stock < 0 or stock > 2_147_483_647:
+        raise ValueError("O estoque deve ser um inteiro nao negativo")
+
+    return {
+        "name": normalized_name,
+        "category": category,
+        "price": f"{dec_price:.2f}",
+        "stock": stock,
+        "description": description,
+    }
 
 
 def request_api(
@@ -44,6 +89,16 @@ def request_api(
         except ValueError:
             detail = {"detail": raw or exc.reason}
         return exc.code, detail
+
+
+def _add_product_arguments(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument("--name", required=True, help="Nome do produto")
+    subparser.add_argument("--category", required=True, help="Categoria do produto")
+    subparser.add_argument("--price", required=True, help="Preco unitario (> 0)")
+    subparser.add_argument("--stock", required=True, type=int, help="Estoque (>= 0)")
+    subparser.add_argument(
+        "--description", default="", help="Descricao complementar (opcional)"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -80,7 +135,35 @@ def build_parser() -> argparse.ArgumentParser:
     token_parser.add_argument("--username", required=True, help="Usuario de acesso")
     token_parser.add_argument("--password", required=True, help="Senha de acesso")
 
+    create_parser = subparsers.add_parser(
+        "create",
+        help="Cadastra um novo produto via API CLI (POST /api/cli/records)",
+    )
+    _add_product_arguments(create_parser)
+
+    update_parser = subparsers.add_parser(
+        "update",
+        help="Atualiza um produto existente via API CLI (PUT /api/cli/records/{id})",
+    )
+    update_parser.add_argument(
+        "--id", dest="product_id", required=True, type=int, help="ID do produto"
+    )
+    _add_product_arguments(update_parser)
+
     return parser
+
+
+def _require_token(raw_token: str | None) -> str | None:
+    token = resolve_token(raw_token)
+    if not token:
+        print(
+            json.dumps(
+                {"status": "error", "detail": "Informe --token ou defina CLI_TOKEN"}
+            ),
+            file=sys.stderr,
+        )
+        return None
+    return token
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -88,23 +171,52 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "health":
-        token = resolve_token(args.token) if args.auth else None
-        if args.auth and not token:
-            print(
-                json.dumps(
-                    {"status": "error", "detail": "Informe --token ou defina CLI_TOKEN"}
-                ),
-                file=sys.stderr,
-            )
-            return 1
+        token = None
+        if args.auth:
+            token = _require_token(args.token)
+            if token is None:
+                return 1
         status, body = request_api(args.base_url, "GET", "/api/cli/health", token=token)
-    else:
+    elif args.command == "token":
         status, body = request_api(
             args.base_url,
             "POST",
             "/api/cli/token",
             payload={"username": args.username, "password": args.password},
         )
+    else:
+        token = _require_token(args.token)
+        if token is None:
+            return 1
+        product_id = getattr(args, "product_id", None)
+        try:
+            payload = validate_product_payload(
+                name=args.name,
+                category=args.category,
+                price=args.price,
+                stock=args.stock,
+                description=args.description,
+                product_id=product_id,
+            )
+        except ValueError as exc:
+            print(
+                json.dumps({"status": "error", "detail": str(exc)}, ensure_ascii=False),
+                file=sys.stderr,
+            )
+            return 1
+
+        if args.command == "create":
+            status, body = request_api(
+                args.base_url, "POST", "/api/cli/records", payload=payload, token=token
+            )
+        else:
+            status, body = request_api(
+                args.base_url,
+                "PUT",
+                f"/api/cli/records/{product_id}",
+                payload=payload,
+                token=token,
+            )
 
     print(json.dumps(body, ensure_ascii=False))
     return 0 if 200 <= status < 300 else 1
