@@ -135,3 +135,24 @@ Execute a suíte de testes unitários verificando 100% de cobertura em `api.py` 
 ```bash
 docker compose run --rm api pytest --cov=api --cov=db --cov-report=term-missing --cov-fail-under=100
 ```
+
+---
+
+## Issue #4 — Busca avançada Web de produtos
+
+No **Painel de Produtos**, use os filtros **Buscar por nome**, **Categoria**, **Preço mínimo** e **Preço máximo** em conjunto ou separadamente. A busca é enviada de forma assíncrona e atualiza a tabela sem recarregar a página. O botão **Limpar filtros** restaura a listagem completa.
+
+O endpoint protegido `GET /api/web/records/search` aceita:
+
+- `search`: trecho do nome do produto, sem diferenciar maiúsculas de minúsculas.
+- `category`: categoria exata (`Eletronicos`, `Perifericos`, `Moveis`, `Vestuario` ou `Outros`).
+- `min_price` e `max_price`: limites inclusivos da faixa de preço; o mínimo não pode exceder o máximo.
+- `page`, `page_size`, `sort_by` e `order`: paginação fixa de 5 itens e ordenação nos mesmos campos aceitos pela listagem Web.
+
+Todos os filtros são opcionais e combinados com `AND`. A busca usa consulta SQL parametrizada em `db.web_search_products`, exige o token Web obtido no login e emite logs JSON correlacionados nas camadas `api` e `db`.
+
+Para executar os testes e confirmar 100% de cobertura de linhas em `api.py` e `db.py`:
+
+```bash
+docker compose run --rm api pytest --cov=api --cov=db --cov-report=term-missing --cov-fail-under=100
+```

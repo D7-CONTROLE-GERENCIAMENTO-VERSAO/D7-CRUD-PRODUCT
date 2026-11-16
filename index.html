@@ -186,6 +186,17 @@
       margin-bottom: 0;
       min-width: 150px;
     }
+    .search-controls {
+      display: flex;
+      align-items: flex-end;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-bottom: 1rem;
+    }
+    .search-controls .form-group {
+      flex: 1 1 150px;
+      margin-bottom: 0;
+    }
     .table-wrapper {
       overflow-x: auto;
       border: 1px solid var(--border);
@@ -375,6 +386,33 @@
             </div>
           </div>
 
+          <div class="search-controls" aria-label="Filtros de busca">
+            <div class="form-group">
+              <label for="search-name">Buscar por nome</label>
+              <input id="search-name" name="search" type="search" maxlength="120" />
+            </div>
+            <div class="form-group">
+              <label for="search-category">Categoria</label>
+              <select id="search-category" name="category">
+                <option value="">Todas as categorias</option>
+                <option value="Eletronicos">Eletronicos</option>
+                <option value="Perifericos">Perifericos</option>
+                <option value="Moveis">Moveis</option>
+                <option value="Vestuario">Vestuario</option>
+                <option value="Outros">Outros</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="search-min-price">Preço mínimo</label>
+              <input id="search-min-price" name="min_price" type="number" min="0" step="0.01" />
+            </div>
+            <div class="form-group">
+              <label for="search-max-price">Preço máximo</label>
+              <input id="search-max-price" name="max_price" type="number" min="0" step="0.01" />
+            </div>
+            <button id="clear-search-btn" class="secondary" type="button">Limpar filtros</button>
+          </div>
+
           <div class="table-wrapper">
             <table id="products-table">
               <thead>
@@ -430,6 +468,11 @@
     const editProductId = document.getElementById("edit-product-id");
     const sortBySelect = document.getElementById("sort-by");
     const sortOrderSelect = document.getElementById("sort-order");
+    const searchNameInput = document.getElementById("search-name");
+    const searchCategorySelect = document.getElementById("search-category");
+    const searchMinPriceInput = document.getElementById("search-min-price");
+    const searchMaxPriceInput = document.getElementById("search-max-price");
+    const clearSearchButton = document.getElementById("clear-search-btn");
     const productsTable = document.getElementById("products-table");
     const productsTbody = document.getElementById("products-tbody");
     const prevPageBtn = document.getElementById("prev-page-btn");
@@ -631,9 +674,21 @@
         sort_by: sortBy,
         order: sortOrder,
       });
+      const search = searchNameInput.value.trim();
+      const category = searchCategorySelect.value;
+      const minPrice = searchMinPriceInput.value;
+      const maxPrice = searchMaxPriceInput.value;
+      const hasFilters = Boolean(search || category || minPrice || maxPrice);
+      if (search) params.set("search", search);
+      if (category) params.set("category", category);
+      if (minPrice !== "") params.set("min_price", minPrice);
+      if (maxPrice !== "") params.set("max_price", maxPrice);
+      const endpoint = hasFilters
+        ? "/api/web/records/search"
+        : "/api/web/records";
 
       try {
-        const res = await fetch(`/api/web/records?${params.toString()}`, {
+        const res = await fetch(`${endpoint}?${params.toString()}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) {
@@ -801,6 +856,27 @@
 
     sortOrderSelect.addEventListener("change", () => {
       sortOrder = sortOrderSelect.value;
+      currentPage = 1;
+      loadProducts();
+    });
+
+    [
+      searchNameInput,
+      searchCategorySelect,
+      searchMinPriceInput,
+      searchMaxPriceInput,
+    ].forEach((input) => {
+      input.addEventListener("change", () => {
+        currentPage = 1;
+        loadProducts();
+      });
+    });
+
+    clearSearchButton.addEventListener("click", () => {
+      searchNameInput.value = "";
+      searchCategorySelect.value = "";
+      searchMinPriceInput.value = "";
+      searchMaxPriceInput.value = "";
       currentPage = 1;
       loadProducts();
     });

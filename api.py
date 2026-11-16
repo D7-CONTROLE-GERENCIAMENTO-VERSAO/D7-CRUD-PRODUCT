@@ -17,6 +17,9 @@ import db
 
 SortField = Literal["id", "name", "category", "price", "stock"]
 SortOrder = Literal["asc", "desc"]
+ProductCategory = Literal[
+    "Eletronicos", "Perifericos", "Moveis", "Vestuario", "Outros"
+]
 
 
 class LoginPayload(BaseModel):
@@ -28,7 +31,7 @@ class ProductPayload(BaseModel):
     name: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=2, max_length=120)
     ]
-    category: Literal["Eletronicos", "Perifericos", "Moveis", "Vestuario", "Outros"]
+    category: ProductCategory
     price: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
     stock: int = Field(ge=0, le=2_147_483_647)
     description: str = ""
@@ -252,6 +255,55 @@ def web_list_records(
         status="success",
         request_id=req_id,
         message="Produtos listados",
+    )
+    return {
+        "status": "ok",
+        "items": result["items"],
+        "total": result["total"],
+        "page": page,
+        "page_size": page_size,
+        "sort_by": sort_by,
+        "order": order,
+    }
+
+
+@app.get("/api/web/records/search")
+def web_search_records(
+    search: str | None = Query(default=None, max_length=120),
+    category: ProductCategory | None = Query(default=None),
+    min_price: Decimal | None = Query(default=None, ge=0),
+    max_price: Decimal | None = Query(default=None, ge=0),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=5, ge=5, le=5),
+    sort_by: SortField = Query(default="id"),
+    order: SortOrder = Query(default="asc"),
+    authorization: str | None = Header(default=None),
+):
+    req_id = new_request_id()
+    verify_web_token(authorization, request_id=req_id)
+    if min_price is not None and max_price is not None and min_price > max_price:
+        raise HTTPException(
+            status_code=422,
+            detail="O preco minimo nao pode ser maior que o preco maximo",
+        )
+
+    result = db.web_search_products(
+        search=search,
+        category=category,
+        min_price=min_price,
+        max_price=max_price,
+        page=page,
+        page_size=page_size,
+        sort_by=sort_by,
+        order=order,
+        request_id=req_id,
+    )
+    log_api(
+        client="web",
+        operation="search",
+        status="success",
+        request_id=req_id,
+        message="Produtos buscados",
     )
     return {
         "status": "ok",

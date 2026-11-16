@@ -269,6 +269,69 @@ def web_list_products(
     return {"items": items, "total": total}
 
 
+def web_search_products(
+    search: str | None,
+    category: str | None,
+    min_price: Decimal | None,
+    max_price: Decimal | None,
+    page: int,
+    page_size: int,
+    sort_by: str,
+    order: str,
+    request_id: str,
+) -> dict:
+    filters = []
+    filter_params = []
+    if search and search.strip():
+        filters.append("name ILIKE %s")
+        filter_params.append(f"%{search.strip()}%")
+    if category:
+        filters.append("category = %s")
+        filter_params.append(category)
+    if min_price is not None:
+        filters.append("price >= %s")
+        filter_params.append(min_price)
+    if max_price is not None:
+        filters.append("price <= %s")
+        filter_params.append(max_price)
+
+    where_clause = f" WHERE {' AND '.join(filters)}" if filters else ""
+    sort_column = SORT_COLUMNS[sort_by]
+    sort_direction = "ASC" if order.lower() == "asc" else "DESC"
+    offset = (page - 1) * page_size
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(*) FROM products{where_clause};",
+                tuple(filter_params),
+            )
+            total = cur.fetchone()[0]
+            cur.execute(
+                f"""
+                SELECT id, name, category, price, stock, description
+                FROM products{where_clause}
+                ORDER BY {sort_column} {sort_direction}, id ASC
+                LIMIT %s OFFSET %s;
+                """,
+                tuple(filter_params + [page_size, offset]),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    items = [_product_from_row(row) for row in rows]
+    log_db(
+        client="web",
+        operation="search",
+        status="success",
+        request_id=request_id,
+        message="Produtos buscados no banco",
+    )
+    return {"items": items, "total": total}
+
+
 def web_delete_product(product_id: int, request_id: str) -> bool:
     conn = get_connection()
     try:

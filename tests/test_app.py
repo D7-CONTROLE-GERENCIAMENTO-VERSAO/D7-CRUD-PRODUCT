@@ -409,6 +409,87 @@ def test_db_web_list_products(capsys):
     assert [entry["request_id"] for entry in logs] == ["req-list-desc", "req-list-asc"]
 
 
+def test_db_web_search_products_combines_filters_and_paginates(capsys):
+    row = (17, "Teclado", "Perifericos", Decimal("125.90"), 8, "Mecanico")
+    conn, cursor = _make_mock_conn(fetchone_return=(3,))
+    cursor.fetchall.return_value = [row]
+
+    with patch("db.get_connection", return_value=conn):
+        result = db.web_search_products(
+            search="  tecla ",
+            category="Perifericos",
+            min_price=Decimal("100.00"),
+            max_price=Decimal("200.00"),
+            page=2,
+            page_size=5,
+            sort_by="price",
+            order="desc",
+            request_id="req-search",
+        )
+
+    count_sql, count_params = cursor.execute.call_args_list[0].args
+    result_sql, result_params = cursor.execute.call_args_list[1].args
+    assert "name ILIKE %s" in count_sql
+    assert "category = %s" in count_sql
+    assert "price >= %s" in count_sql
+    assert "price <= %s" in count_sql
+    assert count_params == ("%tecla%", "Perifericos", Decimal("100.00"), Decimal("200.00"))
+    assert "ORDER BY price DESC, id ASC" in result_sql
+    assert "LIMIT %s OFFSET %s" in result_sql
+    assert result_params == (
+        "%tecla%",
+        "Perifericos",
+        Decimal("100.00"),
+        Decimal("200.00"),
+        5,
+        5,
+    )
+    assert result == {
+        "items": [
+            {
+                "id": 17,
+                "name": "Teclado",
+                "category": "Perifericos",
+                "price": Decimal("125.90"),
+                "stock": 8,
+                "description": "Mecanico",
+            }
+        ],
+        "total": 3,
+    }
+    conn.close.assert_called_once()
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert logs[0]["operation"] == "search"
+    assert logs[0]["request_id"] == "req-search"
+
+
+def test_db_web_search_products_without_filters(capsys):
+    conn, cursor = _make_mock_conn(fetchone_return=(0,))
+    cursor.fetchall.return_value = []
+
+    with patch("db.get_connection", return_value=conn):
+        result = db.web_search_products(
+            search=None,
+            category=None,
+            min_price=None,
+            max_price=None,
+            page=1,
+            page_size=5,
+            sort_by="id",
+            order="asc",
+            request_id="req-search-empty",
+        )
+
+    count_sql, count_params = cursor.execute.call_args_list[0].args
+    result_sql, result_params = cursor.execute.call_args_list[1].args
+    assert "WHERE" not in count_sql
+    assert count_params == ()
+    assert "ORDER BY id ASC, id ASC" in result_sql
+    assert result_params == (5, 0)
+    assert result == {"items": [], "total": 0}
+    assert json.loads(capsys.readouterr().out)["operation"] == "search"
+
+
 def test_db_web_delete_product(capsys):
     ok_conn, ok_cursor = _make_mock_conn(fetchone_return=(7,))
     with patch("db.get_connection", return_value=ok_conn):
@@ -491,6 +572,71 @@ def test_api_web_list_products_and_validation(capsys):
     assert list_logs[1]["request_id"] == list_mock.call_args_list[1].kwargs["request_id"]
 
 
+def test_api_web_search_products_auth_filters_and_validation(capsys):
+    sample_items = [
+        {
+            "id": 17,
+            "name": "Teclado",
+            "category": "Perifericos",
+            "price": Decimal("125.90"),
+            "stock": 8,
+            "description": "Mecanico",
+        }
+    ]
+    with patch("db.init_db"):
+        with TestClient(api.app) as client:
+            unauth = client.get("/api/web/records/search")
+            assert unauth.status_code == 401
+
+            token = api.create_web_token("admin")
+            headers = {"Authorization": f"Bearer {token}"}
+            with patch(
+                "db.web_search_products",
+                return_value={"items": sample_items, "total": 1},
+            ) as search_mock:
+                response = client.get(
+                    "/api/web/records/search"
+                    "?search=tecla&category=Perifericos&min_price=100"
+                    "&max_price=200&page=2&page_size=5&sort_by=price&order=desc",
+                    headers=headers,
+                )
+                bad_range = client.get(
+                    "/api/web/records/search?min_price=200&max_price=100",
+                    headers=headers,
+                )
+                bad_category = client.get(
+                    "/api/web/records/search?category=Invalida",
+                    headers=headers,
+                )
+                bad_price = client.get(
+                    "/api/web/records/search?min_price=-1",
+                    headers=headers,
+                )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["page"] == 2
+    assert response.json()["sort_by"] == "price"
+    assert response.json()["order"] == "desc"
+    search_kwargs = search_mock.call_args.kwargs
+    assert search_kwargs["search"] == "tecla"
+    assert search_kwargs["category"] == "Perifericos"
+    assert search_kwargs["min_price"] == Decimal("100")
+    assert search_kwargs["max_price"] == Decimal("200")
+    assert search_kwargs["page"] == 2
+    assert search_kwargs["page_size"] == 5
+    assert search_kwargs["sort_by"] == "price"
+    assert search_kwargs["order"] == "desc"
+    assert bad_range.status_code == 422
+    assert bad_category.status_code == 422
+    assert bad_price.status_code == 422
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    search_logs = [entry for entry in logs if entry["operation"] == "search"]
+    assert len(search_logs) == 1
+    assert search_logs[0]["request_id"] == search_kwargs["request_id"]
+
+
 def test_api_web_delete_product_and_auth(capsys):
     with patch("db.init_db"):
         with TestClient(api.app) as client:
@@ -531,6 +677,12 @@ def test_index_contains_listing_pagination_sort_and_delete_controls():
         'id="next-page-btn"',
         'id="page-info"',
         'id="delete-product-btn"',
+        'id="search-name"',
+        'id="search-category"',
+        'id="search-min-price"',
+        'id="search-max-price"',
+        'id="clear-search-btn"',
+        "/api/web/records/search",
         "/api/web/records",
     ):
         assert marker in res_index.text
