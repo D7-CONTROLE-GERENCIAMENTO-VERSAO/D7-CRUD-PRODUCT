@@ -409,3 +409,60 @@ Como o serviço `api` no `docker-compose.yml` monta o diretório do repositório
 ```bash
 docker compose run --rm api pytest --cov=api --cov=db --cov=cli --cov-report=term-missing --cov-fail-under=100
 ```
+
+---
+
+## Issue #12 — Indicadores de Produtos na CLI
+
+O subcomando `dashboard` apresenta no terminal, por categoria, os mesmos três indicadores e totais retornados pelo Dashboard Web: quantidade de produtos (`COUNT(*)`), unidades em estoque (`SUM(stock)`) e valor financeiro em estoque (`SUM(price * stock)`). O endpoint dedicado `GET /api/cli/dashboard` consulta `db.cli_get_dashboard`, com SQL e logs próprios da CLI.
+
+### 1. Iniciar, autenticar e preparar dados
+
+Inicie Web, API e PostgreSQL:
+
+```bash
+docker compose up -d --build
+```
+
+A interface Web fica disponível em `http://localhost:8000/`. Entre com o usuário configurado (`admin` por padrão) e confira os produtos pelo **Painel de Produtos**. Para emitir um token CLI:
+
+```bash
+docker compose run --rm api python cli.py token --username admin --password admin123
+```
+
+Caso o banco ainda não tenha produtos, cadastre dados pelo formulário Web ou pela CLI autenticada:
+
+```bash
+docker compose run --rm -e CLI_TOKEN="<TOKEN>" api python cli.py create \
+  --name "Teclado Mecanico" \
+  --category "Perifericos" \
+  --price "249.90" \
+  --stock 12 \
+  --description "Produto para demonstracao"
+```
+
+### 2. Consultar os indicadores
+
+Use o token emitido em `CLI_TOKEN` ou no argumento global `--token`:
+
+```bash
+docker compose run --rm -e CLI_TOKEN="<TOKEN>" api python cli.py dashboard
+```
+
+O resultado contém os três grupos por categoria e os totais gerais. Os valores são agregados no PostgreSQL e correspondem aos mesmos campos apresentados pela Web. O endpoint exige `Authorization: Bearer <token>` e retorna HTTP 401 quando o token está ausente ou inválido.
+
+### 3. Logs e cobertura
+
+A operação registra logs JSON com `client: "cli"`, `operation: "dashboard"` e `request_id` correlacionado entre as camadas `api` e `db`. Consulte os logs:
+
+```bash
+docker compose logs -f api
+```
+
+Execute toda a suíte e exija 100% de cobertura de linhas em `api.py`, `db.py` e `cli.py`:
+
+```bash
+docker compose run --rm api pytest --cov=api --cov=db --cov=cli --cov-report=term-missing --cov-fail-under=100
+```
+
+O fluxo completo — inicialização, Web, API, PostgreSQL, CLI e testes — roda em Docker Compose, sem instalar dependências da aplicação no host.

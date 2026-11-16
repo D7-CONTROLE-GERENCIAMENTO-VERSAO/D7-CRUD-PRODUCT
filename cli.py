@@ -285,7 +285,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="Caminho de arquivo para salvar o CSV gerado (padrao: stdout)",
     )
 
+    subparsers.add_parser(
+        "dashboard",
+        help="Exibe indicadores de produtos por categoria via API CLI",
+    )
+
     return parser
+
+
+def _format_dashboard(dashboard: dict) -> str:
+    totals = dashboard["totals"]
+    lines = [
+        "Indicadores CLI por categoria",
+        "",
+        "1. Produtos por categoria:",
+    ]
+    for item in dashboard["products_by_category"]:
+        lines.append(f"  {item['category']}: {item['count']} produto(s)")
+    lines.extend(
+        [
+            f"Total geral: {totals['total_products']} produto(s)",
+            "",
+            "2. Estoque total por categoria:",
+        ]
+    )
+    for item in dashboard["stock_by_category"]:
+        lines.append(f"  {item['category']}: {item['total_stock']} unidade(s)")
+    lines.extend(
+        [
+            f"Total geral: {totals['total_stock']} unidade(s)",
+            "",
+            "3. Valor financeiro em estoque por categoria:",
+        ]
+    )
+    for item in dashboard["financial_by_category"]:
+        value = Decimal(str(item["total_value"]))
+        lines.append(f"  {item['category']}: R$ {value:.2f}")
+    total_value = Decimal(str(totals["total_financial_value"]))
+    lines.append(f"Total geral: R$ {total_value:.2f}")
+    return "\n".join(lines)
 
 
 def _require_token(raw_token: str | None) -> str | None:
@@ -366,6 +404,13 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(csv_result, end="")
             return 0
+        elif args.command == "dashboard":
+            status, body = request_api(
+                args.base_url,
+                "GET",
+                "/api/cli/dashboard",
+                token=token,
+            )
         elif args.command == "delete":
             status, body = request_api(
                 args.base_url,
@@ -409,6 +454,10 @@ def main(argv: list[str] | None = None) -> int:
                     payload=payload,
                     token=token,
                 )
+
+    if args.command == "dashboard" and 200 <= status < 300:
+        print(_format_dashboard(body))
+        return 0
 
     print(json.dumps(body, ensure_ascii=False))
     return 0 if 200 <= status < 300 else 1

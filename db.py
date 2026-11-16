@@ -482,6 +482,59 @@ def web_get_dashboard(request_id: str) -> dict:
     }
 
 
+def cli_get_dashboard(request_id: str) -> dict:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    category,
+                    COUNT(*) AS products_count,
+                    COALESCE(SUM(stock), 0) AS total_stock,
+                    COALESCE(SUM(price * stock), 0) AS stock_value
+                FROM products
+                GROUP BY category
+                ORDER BY category ASC;
+                """
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    products_by_category = [
+        {"category": row[0], "count": int(row[1])} for row in rows
+    ]
+    stock_by_category = [
+        {"category": row[0], "total_stock": int(row[2])} for row in rows
+    ]
+    financial_by_category = [
+        {"category": row[0], "total_value": Decimal(str(row[3]))} for row in rows
+    ]
+    totals = {
+        "total_products": sum(item["count"] for item in products_by_category),
+        "total_stock": sum(item["total_stock"] for item in stock_by_category),
+        "total_financial_value": sum(
+            (item["total_value"] for item in financial_by_category),
+            Decimal("0.00"),
+        ),
+    }
+
+    log_db(
+        client="cli",
+        operation="dashboard",
+        status="success",
+        request_id=request_id,
+        message="Indicadores do dashboard consultados no banco via CLI",
+    )
+    return {
+        "products_by_category": products_by_category,
+        "stock_by_category": stock_by_category,
+        "financial_by_category": financial_by_category,
+        "totals": totals,
+    }
+
+
 def cli_authenticate_user(username: str, password: str, request_id: str) -> bool:
     conn = get_connection()
     try:

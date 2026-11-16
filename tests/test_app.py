@@ -1953,3 +1953,198 @@ def test_cli_export_command(capsys, monkeypatch, tmp_path):
         )
     assert code_502 == 502
     assert err_502 == {"detail": "gateway error"}
+
+
+def test_db_cli_get_dashboard(capsys):
+    conn, cursor = _make_mock_conn()
+    cursor.fetchall.return_value = [
+        ("Eletronicos", 2, 10, Decimal("2500.00")),
+        ("Perifericos", 3, 15, Decimal("750.50")),
+    ]
+    with patch("db.get_connection", return_value=conn):
+        dashboard = db.cli_get_dashboard(request_id="req-cli-dashboard-db")
+
+    sql = cursor.execute.call_args.args[0]
+    assert "COUNT(*)" in sql
+    assert "SUM(stock)" in sql
+    assert "SUM(price * stock)" in sql
+    assert "GROUP BY category" in sql
+    conn.close.assert_called_once()
+    assert dashboard == {
+        "products_by_category": [
+            {"category": "Eletronicos", "count": 2},
+            {"category": "Perifericos", "count": 3},
+        ],
+        "stock_by_category": [
+            {"category": "Eletronicos", "total_stock": 10},
+            {"category": "Perifericos", "total_stock": 15},
+        ],
+        "financial_by_category": [
+            {"category": "Eletronicos", "total_value": Decimal("2500.00")},
+            {"category": "Perifericos", "total_value": Decimal("750.50")},
+        ],
+        "totals": {
+            "total_products": 5,
+            "total_stock": 25,
+            "total_financial_value": Decimal("3250.50"),
+        },
+    }
+
+    log_entry = json.loads(capsys.readouterr().out.strip())
+    assert log_entry["layer"] == "db"
+    assert log_entry["client"] == "cli"
+    assert log_entry["operation"] == "dashboard"
+    assert log_entry["status"] == "success"
+    assert log_entry["request_id"] == "req-cli-dashboard-db"
+
+
+def test_api_cli_get_dashboard_auth_and_correlated_logs(capsys):
+    sample_dashboard = {
+        "products_by_category": [{"category": "Perifericos", "count": 2}],
+        "stock_by_category": [{"category": "Perifericos", "total_stock": 8}],
+        "financial_by_category": [
+            {"category": "Perifericos", "total_value": Decimal("400.00")}
+        ],
+        "totals": {
+            "total_products": 2,
+            "total_stock": 8,
+            "total_financial_value": Decimal("400.00"),
+        },
+    }
+    with patch("db.init_db"):
+        with TestClient(api.app) as client:
+            unauth = client.get("/api/cli/dashboard")
+
+            cli_token = api.create_cli_token("admin")
+            headers = {"Authorization": f"Bearer {cli_token}"}
+            with patch(
+                "db.cli_get_dashboard", return_value=sample_dashboard
+            ) as dashboard_mock:
+                response = client.get("/api/cli/dashboard", headers=headers)
+
+    assert unauth.status_code == 401
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "products_by_category": [
+            {"category": "Perifericos", "count": 2},
+        ],
+        "stock_by_category": [
+            {"category": "Perifericos", "total_stock": 8},
+        ],
+        "financial_by_category": [
+            {"category": "Perifericos", "total_value": 400.0},
+        ],
+        "totals": {
+            "total_products": 2,
+            "total_stock": 8,
+            "total_financial_value": 400.0,
+        },
+    }
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    dashboard_logs = [
+        entry
+        for entry in logs
+        if entry["client"] == "cli" and entry["operation"] == "dashboard"
+    ]
+    assert len(dashboard_logs) == 1
+    assert dashboard_logs[0]["layer"] == "api"
+    assert dashboard_logs[0]["client"] == "cli"
+    assert dashboard_logs[0]["status"] == "success"
+    assert dashboard_logs[0]["request_id"] == dashboard_mock.call_args.kwargs[
+        "request_id"
+    ]
+
+
+def test_cli_dashboard_command_and_empty_categories(capsys, monkeypatch):
+    monkeypatch.delenv("CLI_TOKEN", raising=False)
+    assert cli.main(["dashboard"]) == 1
+    assert "CLI_TOKEN" in capsys.readouterr().err
+
+    dashboard = {
+        "products_by_category": [
+            {"category": "Eletronicos", "count": 2},
+            {"category": "Perifericos", "count": 3},
+        ],
+        "stock_by_category": [
+            {"category": "Eletronicos", "total_stock": 10},
+            {"category": "Perifericos", "total_stock": 15},
+        ],
+        "financial_by_category": [
+            {"category": "Eletronicos", "total_value": 2500.0},
+            {"category": "Perifericos", "total_value": 750.5},
+        ],
+        "totals": {
+            "total_products": 5,
+            "total_stock": 25,
+            "total_financial_value": 3250.5,
+        },
+    }
+
+    def _mock_resp(status: int, payload: dict):
+        resp = MagicMock()
+        resp.status = status
+        resp.read.return_value = json.dumps(payload).encode("utf-8")
+        cm = MagicMock()
+        cm.__enter__.return_value = resp
+        return cm
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_mock_resp(200, dashboard),
+    ) as mock_dashboard:
+        result = cli.main(["--token", "tok-cli", "dashboard"])
+
+    assert result == 0
+    request = mock_dashboard.call_args.args[0]
+    assert request.get_method() == "GET"
+    assert request.full_url == "http://api:8000/api/cli/dashboard"
+    assert request.headers["Authorization"] == "Bearer tok-cli"
+    assert capsys.readouterr().out == (
+        "Indicadores CLI por categoria\n"
+        "\n"
+        "1. Produtos por categoria:\n"
+        "  Eletronicos: 2 produto(s)\n"
+        "  Perifericos: 3 produto(s)\n"
+        "Total geral: 5 produto(s)\n"
+        "\n"
+        "2. Estoque total por categoria:\n"
+        "  Eletronicos: 10 unidade(s)\n"
+        "  Perifericos: 15 unidade(s)\n"
+        "Total geral: 25 unidade(s)\n"
+        "\n"
+        "3. Valor financeiro em estoque por categoria:\n"
+        "  Eletronicos: R$ 2500.00\n"
+        "  Perifericos: R$ 750.50\n"
+        "Total geral: R$ 3250.50\n"
+    )
+
+    empty_dashboard = {
+        "products_by_category": [],
+        "stock_by_category": [],
+        "financial_by_category": [],
+        "totals": {
+            "total_products": 0,
+            "total_stock": 0,
+            "total_financial_value": 0,
+        },
+    }
+    empty_output = cli._format_dashboard(empty_dashboard)
+    assert "Total geral: 0 produto(s)" in empty_output
+    assert "Total geral: 0 unidade(s)" in empty_output
+    assert "Total geral: R$ 0.00" in empty_output
+
+    unauthorized = urllib.error.HTTPError(
+        "http://api:8000/api/cli/dashboard",
+        401,
+        "Unauthorized",
+        {},
+        io.BytesIO(b'{"detail":"Token CLI ausente ou invalido"}'),
+    )
+    with patch("urllib.request.urlopen", side_effect=unauthorized):
+        failed = cli.main(["--token", "invalid", "dashboard"])
+    assert failed == 1
+    assert json.loads(capsys.readouterr().out.strip()) == {
+        "detail": "Token CLI ausente ou invalido"
+    }

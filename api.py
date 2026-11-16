@@ -688,6 +688,23 @@ def cli_export_records(
     )
 
 
+@app.get("/api/cli/dashboard")
+def cli_get_dashboard(
+    authorization: str | None = Header(default=None),
+):
+    req_id = new_request_id()
+    verify_cli_token(authorization, request_id=req_id)
+    dashboard = db.cli_get_dashboard(request_id=req_id)
+    log_api(
+        client="cli",
+        operation="dashboard",
+        status="success",
+        request_id=req_id,
+        message="Dashboard CLI carregado",
+    )
+    return {"status": "ok", **dashboard}
+
+
 @app.delete("/api/cli/records/{product_id}")
 def cli_delete_record(
     product_id: int,
