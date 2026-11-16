@@ -676,3 +676,56 @@ def cli_delete_product(product_id: int, request_id: str) -> bool:
         message="Produto removido via CLI",
     )
     return True
+
+
+def cli_search_products(
+    search: str | None,
+    category: str | None,
+    min_price: Decimal | None,
+    max_price: Decimal | None,
+    page: int,
+    page_size: int,
+    sort_by: str,
+    order: str,
+    request_id: str,
+) -> dict:
+    where_clause, filter_params = _build_product_filters(
+        search=search,
+        category=category,
+        min_price=min_price,
+        max_price=max_price,
+    )
+    sort_column = SORT_COLUMNS[sort_by]
+    sort_direction = "ASC" if order.lower() == "asc" else "DESC"
+    offset = (page - 1) * page_size
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(*) FROM products{where_clause};",
+                tuple(filter_params),
+            )
+            total = cur.fetchone()[0]
+            cur.execute(
+                f"""
+                SELECT id, name, category, price, stock, description
+                FROM products{where_clause}
+                ORDER BY {sort_column} {sort_direction}, id ASC
+                LIMIT %s OFFSET %s;
+                """,
+                tuple(filter_params + [page_size, offset]),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    items = [_product_from_row(row) for row in rows]
+    log_db(
+        client="cli",
+        operation="search",
+        status="success",
+        request_id=request_id,
+        message="Produtos buscados no banco via CLI",
+    )
+    return {"items": items, "total": total}

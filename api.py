@@ -591,6 +591,55 @@ def cli_list_records(
     }
 
 
+@app.get("/api/cli/records/search")
+def cli_search_records(
+    search: str | None = Query(default=None, max_length=120),
+    category: ProductCategory | None = Query(default=None),
+    min_price: Decimal | None = Query(default=None, ge=0),
+    max_price: Decimal | None = Query(default=None, ge=0),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=5, ge=5, le=5),
+    sort_by: SortField = Query(default="id"),
+    order: SortOrder = Query(default="asc"),
+    authorization: str | None = Header(default=None),
+):
+    req_id = new_request_id()
+    verify_cli_token(authorization, request_id=req_id)
+    if min_price is not None and max_price is not None and min_price > max_price:
+        raise HTTPException(
+            status_code=422,
+            detail="O preco minimo nao pode ser maior que o preco maximo",
+        )
+
+    result = db.cli_search_products(
+        search=search,
+        category=category,
+        min_price=min_price,
+        max_price=max_price,
+        page=page,
+        page_size=page_size,
+        sort_by=sort_by,
+        order=order,
+        request_id=req_id,
+    )
+    log_api(
+        client="cli",
+        operation="search",
+        status="success",
+        request_id=req_id,
+        message="Produtos buscados via CLI",
+    )
+    return {
+        "status": "ok",
+        "items": result["items"],
+        "total": result["total"],
+        "page": page,
+        "page_size": page_size,
+        "sort_by": sort_by,
+        "order": order,
+    }
+
+
 @app.delete("/api/cli/records/{product_id}")
 def cli_delete_record(
     product_id: int,

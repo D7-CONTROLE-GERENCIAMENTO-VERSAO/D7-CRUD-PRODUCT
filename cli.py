@@ -177,6 +177,47 @@ def build_parser() -> argparse.ArgumentParser:
         "--id", dest="product_id", required=True, type=int, help="ID do produto"
     )
 
+    search_parser = subparsers.add_parser(
+        "search",
+        help="Busca avancada de produtos via API CLI (GET /api/cli/records/search)",
+    )
+    search_parser.add_argument(
+        "--search", default=None, help="Trecho do nome do produto"
+    )
+    search_parser.add_argument(
+        "--category",
+        choices=VALID_CATEGORIES,
+        default=None,
+        help="Categoria exata do produto",
+    )
+    search_parser.add_argument(
+        "--min-price",
+        dest="min_price",
+        default=None,
+        help="Preco minimo inclusivo (>= 0)",
+    )
+    search_parser.add_argument(
+        "--max-price",
+        dest="max_price",
+        default=None,
+        help="Preco maximo inclusivo (>= 0)",
+    )
+    search_parser.add_argument(
+        "--page", type=int, default=1, help="Numero da pagina"
+    )
+    search_parser.add_argument(
+        "--sort-by",
+        choices=("id", "name", "category", "price", "stock"),
+        default="id",
+        help="Campo de ordenacao",
+    )
+    search_parser.add_argument(
+        "--order",
+        choices=("asc", "desc"),
+        default="asc",
+        help="Direcao da ordenacao",
+    )
+
     return parser
 
 
@@ -228,6 +269,27 @@ def main(argv: list[str] | None = None) -> int:
                 args.base_url,
                 "GET",
                 f"/api/cli/records?{query}",
+                token=token,
+            )
+        elif args.command == "search":
+            params: dict[str, str | int] = {
+                "page": args.page,
+                "sort_by": args.sort_by,
+                "order": args.order,
+            }
+            if args.search is not None and args.search.strip():
+                params["search"] = args.search.strip()
+            if args.category is not None:
+                params["category"] = args.category
+            if args.min_price is not None:
+                params["min_price"] = args.min_price
+            if args.max_price is not None:
+                params["max_price"] = args.max_price
+            query = urllib.parse.urlencode(params)
+            status, body = request_api(
+                args.base_url,
+                "GET",
+                f"/api/cli/records/search?{query}",
                 token=token,
             )
         elif args.command == "delete":

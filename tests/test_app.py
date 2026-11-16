@@ -1590,3 +1590,155 @@ def test_cli_list_and_delete_commands(capsys, monkeypatch):
     assert json.loads(capsys.readouterr().out.strip()) == {
         "detail": "Produto nao encontrado"
     }
+
+
+def test_db_cli_search_products_and_equivalence(capsys):
+    row = (17, "Teclado Mecanico", "Perifericos", Decimal("249.90"), 12, "RGB")
+    conn_cli, cur_cli = _make_mock_conn(fetchone_return=(1,))
+    cur_cli.fetchall.return_value = [row]
+
+    conn_web, cur_web = _make_mock_conn(fetchone_return=(1,))
+    cur_web.fetchall.return_value = [row]
+
+    kwargs = {
+        "search": "tecla",
+        "category": "Perifericos",
+        "min_price": Decimal("100.00"),
+        "max_price": Decimal("300.00"),
+        "page": 1,
+        "page_size": 5,
+        "sort_by": "price",
+        "order": "desc",
+    }
+    with patch("db.get_connection", return_value=conn_cli):
+        res_cli = db.cli_search_products(**kwargs, request_id="req-cli-search")
+    with patch("db.get_connection", return_value=conn_web):
+        res_web = db.web_search_products(**kwargs, request_id="req-web-search")
+
+    assert res_cli == res_web
+    assert cur_cli.execute.call_args_list == cur_web.execute.call_args_list
+    conn_cli.close.assert_called_once()
+    conn_web.close.assert_called_once()
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert logs[0]["client"] == "cli"
+    assert logs[0]["operation"] == "search"
+    assert logs[0]["request_id"] == "req-cli-search"
+
+
+def test_api_cli_search_records_auth_and_validation(capsys):
+    cli_token = api.create_cli_token("admin")
+    headers = {"Authorization": f"Bearer {cli_token}"}
+    sample_items = [
+        {
+            "id": 17,
+            "name": "Teclado Mecanico",
+            "category": "Perifericos",
+            "price": Decimal("249.90"),
+            "stock": 12,
+            "description": "RGB",
+        }
+    ]
+    with patch("db.init_db"):
+        with TestClient(api.app) as client:
+            unauth = client.get("/api/cli/records/search")
+            assert unauth.status_code == 401
+
+            with patch(
+                "db.cli_search_products",
+                return_value={"items": sample_items, "total": 1},
+            ) as search_mock:
+                res_ok = client.get(
+                    "/api/cli/records/search"
+                    "?search=tecla&category=Perifericos&min_price=100"
+                    "&max_price=300&page=2&page_size=5&sort_by=price&order=desc",
+                    headers=headers,
+                )
+                bad_range = client.get(
+                    "/api/cli/records/search?min_price=300&max_price=100",
+                    headers=headers,
+                )
+
+    assert res_ok.status_code == 200
+    body = res_ok.json()
+    assert body["total"] == 1
+    assert body["page"] == 2
+    assert body["sort_by"] == "price"
+    assert body["order"] == "desc"
+    assert bad_range.status_code == 422
+
+    call_kwargs = search_mock.call_args.kwargs
+    assert call_kwargs["search"] == "tecla"
+    assert call_kwargs["category"] == "Perifericos"
+    assert call_kwargs["min_price"] == Decimal("100")
+    assert call_kwargs["max_price"] == Decimal("300")
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    search_logs = [
+        entry
+        for entry in logs
+        if entry["client"] == "cli" and entry["operation"] == "search"
+    ]
+    assert len(search_logs) == 1
+    assert search_logs[0]["request_id"] == call_kwargs["request_id"]
+
+
+def test_cli_search_command(capsys, monkeypatch):
+    monkeypatch.delenv("CLI_TOKEN", raising=False)
+    assert cli.main(["search", "--search", "tecla"]) == 1
+    assert "CLI_TOKEN" in capsys.readouterr().err
+
+    def _mock_resp(status: int, payload: dict):
+        resp = MagicMock()
+        resp.status = status
+        resp.read.return_value = json.dumps(payload).encode("utf-8")
+        cm = MagicMock()
+        cm.__enter__.return_value = resp
+        return cm
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_mock_resp(200, {"status": "ok", "items": [], "total": 0}),
+    ) as mock_search_all:
+        rc_all = cli.main(
+            [
+                "--token",
+                "tok-cli",
+                "search",
+                "--search",
+                "  tecla  ",
+                "--category",
+                "Perifericos",
+                "--min-price",
+                "100.00",
+                "--max-price",
+                "300.00",
+                "--page",
+                "2",
+                "--sort-by",
+                "price",
+                "--order",
+                "desc",
+            ]
+        )
+    assert rc_all == 0
+    req_all = mock_search_all.call_args.args[0]
+    assert req_all.get_method() == "GET"
+    assert req_all.full_url.endswith(
+        "/api/cli/records/search?page=2&sort_by=price&order=desc"
+        "&search=tecla&category=Perifericos&min_price=100.00&max_price=300.00"
+    )
+    assert req_all.headers["Authorization"] == "Bearer tok-cli"
+    capsys.readouterr()
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_mock_resp(200, {"status": "ok", "items": [], "total": 0}),
+    ) as mock_search_defaults:
+        rc_def = cli.main(["--token", "tok-cli", "search"])
+    assert rc_def == 0
+    req_def = mock_search_defaults.call_args.args[0]
+    assert req_def.full_url.endswith(
+        "/api/cli/records/search?page=1&sort_by=id&order=asc"
+    )
+    capsys.readouterr()

@@ -330,3 +330,43 @@ Valide as operações e 100% de cobertura de linhas em `api.py`, `db.py` e `cli.
 ```bash
 docker compose run --rm api pytest --cov=api --cov=db --cov=cli --cov-report=term-missing --cov-fail-under=100
 ```
+
+---
+
+## Issue #10 — Busca Avançada de Produtos na CLI
+
+O subcomando `search` em `cli.py` aplica os mesmos filtros combináveis da interface Web (`--search`, `--category`, `--min-price`, `--max-price`), além de paginação (`--page`) e ordenação (`--sort-by`, `--order`), consumindo o endpoint dedicado `GET /api/cli/records/search` e a função `db.cli_search_products` (garantindo resultados equivalentes entre CLI e Web).
+
+### 1. Exemplos de Busca Avançada via Docker Compose
+
+Busca combinando nome parcial (`ILIKE`), categoria exata, faixa de preço e ordenação:
+
+```bash
+docker compose run --rm -e CLI_TOKEN="<TOKEN>" api python cli.py search \
+  --search "tecla" \
+  --category "Perifericos" \
+  --min-price "100.00" \
+  --max-price "300.00" \
+  --page 1 \
+  --sort-by price \
+  --order desc
+```
+
+Busca apenas por categoria ou faixa de preço:
+
+```bash
+docker compose run --rm -e CLI_TOKEN="<TOKEN>" api python cli.py search --category "Eletronicos"
+docker compose run --rm -e CLI_TOKEN="<TOKEN>" api python cli.py search --min-price "50" --max-price "200"
+```
+
+### 2. Autenticação, Validação e Logs Correlacionados
+
+- **Autenticação:** exige Bearer token CLI válido em `Authorization: Bearer <token>` (retorna **HTTP 401** sem credencial válida).
+- **Validação:** retorna **HTTP 422** caso `min_price > max_price` ou parâmetros de ordenação/paginação/categoria sejam inválidos.
+- **Logs JSON correlacionados:** registra eventos com `client: "cli"`, `operation: "search"` e o mesmo `request_id` nas camadas `api` e `db`. Consulte com `docker compose logs -f api`.
+
+### 3. Testes Unitários e 100% de Cobertura (`api.py`, `db.py` e `cli.py`)
+
+```bash
+docker compose run --rm api pytest --cov=api --cov=db --cov=cli --cov-report=term-missing --cov-fail-under=100
+```
