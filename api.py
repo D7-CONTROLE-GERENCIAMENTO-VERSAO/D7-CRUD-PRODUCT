@@ -401,3 +401,20 @@ def web_delete_record(
         message="Produto removido",
     )
     return {"status": "ok", "deleted_id": product_id}
+
+
+@app.get("/api/web/dashboard")
+def web_get_dashboard(
+    authorization: str | None = Header(default=None),
+):
+    req_id = new_request_id()
+    verify_web_token(authorization, request_id=req_id)
+    dashboard = db.web_get_dashboard(request_id=req_id)
+    log_api(
+        client="web",
+        operation="dashboard",
+        status="success",
+        request_id=req_id,
+        message="Dashboard Web carregado",
+    )
+    return {"status": "ok", **dashboard}

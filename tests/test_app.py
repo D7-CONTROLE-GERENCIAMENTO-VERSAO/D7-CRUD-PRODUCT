@@ -793,8 +793,105 @@ def test_index_contains_listing_pagination_sort_and_delete_controls():
         'id="search-max-price"',
         'id="clear-search-btn"',
         'id="export-csv-btn"',
+        'id="dashboard-section"',
+        'id="chart-products-by-category"',
+        'id="chart-stock-by-category"',
+        'id="chart-financial-by-category"',
         "/api/web/records/search",
         "/api/web/records/export",
+        "/api/web/dashboard",
         "/api/web/records",
     ):
         assert marker in res_index.text
+
+
+def test_db_web_get_dashboard(capsys):
+    conn, cursor = _make_mock_conn()
+    cursor.fetchall.return_value = [
+        ("Eletronicos", 2, 10, Decimal("2500.00")),
+        ("Perifericos", 3, 15, Decimal("750.50")),
+    ]
+    with patch("db.get_connection", return_value=conn):
+        dashboard = db.web_get_dashboard(request_id="req-dash-db")
+
+    sql = cursor.execute.call_args.args[0]
+    assert "COUNT(*)" in sql
+    assert "SUM(stock)" in sql
+    assert "SUM(price * stock)" in sql
+    assert "GROUP BY category" in sql
+    conn.close.assert_called_once()
+
+    assert dashboard == {
+        "products_by_category": [
+            {"category": "Eletronicos", "count": 2},
+            {"category": "Perifericos", "count": 3},
+        ],
+        "stock_by_category": [
+            {"category": "Eletronicos", "total_stock": 10},
+            {"category": "Perifericos", "total_stock": 15},
+        ],
+        "financial_by_category": [
+            {"category": "Eletronicos", "total_value": Decimal("2500.00")},
+            {"category": "Perifericos", "total_value": Decimal("750.50")},
+        ],
+        "totals": {
+            "total_products": 5,
+            "total_stock": 25,
+            "total_financial_value": Decimal("3250.50"),
+        },
+    }
+
+    log_entry = json.loads(capsys.readouterr().out.strip())
+    assert log_entry["layer"] == "db"
+    assert log_entry["client"] == "web"
+    assert log_entry["operation"] == "dashboard"
+    assert log_entry["status"] == "success"
+    assert log_entry["request_id"] == "req-dash-db"
+
+
+def test_api_web_get_dashboard_and_auth(capsys):
+    sample_dashboard = {
+        "products_by_category": [{"category": "Perifericos", "count": 2}],
+        "stock_by_category": [{"category": "Perifericos", "total_stock": 8}],
+        "financial_by_category": [
+            {"category": "Perifericos", "total_value": Decimal("400.00")}
+        ],
+        "totals": {
+            "total_products": 2,
+            "total_stock": 8,
+            "total_financial_value": Decimal("400.00"),
+        },
+    }
+    with patch("db.init_db"):
+        with TestClient(api.app) as client:
+            unauth = client.get("/api/web/dashboard")
+            assert unauth.status_code == 401
+
+            token = api.create_web_token("admin")
+            headers = {"Authorization": f"Bearer {token}"}
+            with patch(
+                "db.web_get_dashboard", return_value=sample_dashboard
+            ) as dash_mock:
+                res_ok = client.get("/api/web/dashboard", headers=headers)
+
+    assert res_ok.status_code == 200
+    body = res_ok.json()
+    assert body["status"] == "ok"
+    assert body["products_by_category"] == [{"category": "Perifericos", "count": 2}]
+    assert body["stock_by_category"] == [{"category": "Perifericos", "total_stock": 8}]
+    assert body["financial_by_category"] == [
+        {"category": "Perifericos", "total_value": 400.0}
+    ]
+    assert body["totals"] == {
+        "total_products": 2,
+        "total_stock": 8,
+        "total_financial_value": 400.0,
+    }
+
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    dash_logs = [entry for entry in logs if entry["operation"] == "dashboard"]
+    assert len(dash_logs) == 1
+    assert dash_logs[0]["layer"] == "api"
+    assert dash_logs[0]["client"] == "web"
+    assert dash_logs[0]["status"] == "success"
+    assert dash_logs[0]["request_id"] == dash_mock.call_args.kwargs["request_id"]

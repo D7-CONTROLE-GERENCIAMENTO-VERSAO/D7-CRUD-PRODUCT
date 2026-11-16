@@ -174,3 +174,24 @@ Para consultar os logs e validar 100% de cobertura via Docker Compose:
 docker compose logs -f api
 docker compose run --rm api pytest --cov=api --cov=db --cov-report=term-missing --cov-fail-under=100
 ```
+
+---
+
+## Issue #6 — Dashboard Web de Indicadores
+
+No **Painel de Produtos**, a seção **Dashboard de Indicadores** (`#dashboard-section`) exibe 3 gráficos em barras alimentados em tempo real pelos dados reais agregados no PostgreSQL (`db.web_get_dashboard`) por meio do endpoint protegido `GET /api/web/dashboard`:
+
+1. **Produtos por Categoria (`COUNT(*)`):** exibe a quantidade total de produtos cadastrados em cada categoria (`products_by_category`) e o total geral de produtos (`totals.total_products`).
+2. **Estoque Total por Categoria (`SUM(stock)`):** exibe a soma de unidades físicas em estoque agrupada por categoria (`stock_by_category`) e o estoque total consolidado (`totals.total_stock`).
+3. **Valor Financeiro em Estoque por Categoria (`SUM(price * stock)`):** exibe o valor financeiro total imobilizado em estoque por categoria (`financial_by_category`) e o patrimônio total em estoque (`totals.total_financial_value`).
+
+Os 3 indicadores são carregados automaticamente ao abrir a página autenticada e atualizados sempre que produtos são cadastrados, editados, excluídos ou recarregados (ou pelo botão **Atualizar indicadores**).
+
+O endpoint `GET /api/web/dashboard` exige autenticação via `Authorization: Bearer <token>` (retornando HTTP 401 quando ausente ou inválido) e registra logs JSON correlacionados pelo mesmo `request_id` (`operation: "dashboard"`) nas camadas `api` e `db`.
+
+Para consultar os logs e validar 100% de cobertura via Docker Compose:
+
+```bash
+docker compose logs -f api
+docker compose run --rm api pytest --cov=api --cov=db --cov-report=term-missing --cov-fail-under=100
+```
