@@ -466,3 +466,9 @@ docker compose run --rm api pytest --cov=api --cov=db --cov=cli --cov-report=ter
 ```
 
 O fluxo completo — inicialização, Web, API, PostgreSQL, CLI e testes — roda em Docker Compose, sem instalar dependências da aplicação no host.
+
+### 4. Integrantes
+
+- Evaldo Rodrigues (2651472)
+- Alan Regis (2651409)
+- Levi Teixeira (2650527)
